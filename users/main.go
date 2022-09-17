@@ -284,20 +284,18 @@ func (s *server) LogoutUser(ctx context.Context, in *pb.LogoutUserRequest) (*pb.
 		return &pb.LogoutUserResponse{}, nil
 	}
 
-	// id, err := strconv.ParseUint(claims.Id, 10, 64)
-
-	if err != nil {
-		log.Println(err, "Error parsing id")
-		return &pb.LogoutUserResponse{}, nil
+	claim := Claims{
+		UserID: claims.UserID,
 	}
 
+	id := claim.UserID
 	var user model.User
-	db.First(&user, claims.Id)
+	db.First(&user, id)
 	if user.ID == 0 {
 		log.Println("User not found")
 		return &pb.LogoutUserResponse{}, nil
 	}
-
+	
 	user.Online = false
 	db.Save(&user)
 

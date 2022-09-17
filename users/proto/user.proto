@@ -5,9 +5,6 @@ option go_package = "./";
 package proto;
 
 service User {
-  rpc GetUser (GetUserRequest) returns (GetUserResponse) {}
-  rpc CreateUser (CreateUserRequest) returns (CreateUserResponse) {}
-  rpc GetUsers (GetUsersRequest) returns (GetUsersResponse) {}
   rpc RestoreUser (RestoreUserRequest) returns (RestoreUserResponse) {}
   rpc LoginUser (LoginUserRequest) returns (LoginUserResponse) {}
   rpc SignupUser (SignupUserRequest) returns (SignupUserResponse) {}
@@ -22,34 +19,6 @@ message DbUser {
   string email = 3;
   string description = 4;
   bool online = 5;
-}
-
-message GetUserRequest {
-  string id = 1;
-}
-
-message GetUserResponse {
-  string id = 1;
-  string username = 2;
-  string email = 3;
-}
-
-message CreateUserRequest {
-  string username = 1;
-  string email = 2;
-  string password = 3;
-}
-
-message CreateUserResponse {
-  string id = 1;
-  string username = 2;
-  string email = 3;
-}
-
-message GetUsersRequest {}
-
-message GetUsersResponse {
-  repeated GetUserResponse users = 1;
 }
 
 message RestoreUserRequest {
