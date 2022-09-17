@@ -124,7 +124,8 @@ func (s *server) RestoreUser(ctx context.Context, in *pb.RestoreUserRequest) (*p
 	claims, err := jwtManager.Verify(token)
 
 	if err != nil {
-		return nil, err
+		log.Println("Error verifying token")
+		return &pb.RestoreUserResponse{}, nil
 	}
 
 	db := database.DB
@@ -134,10 +135,12 @@ func (s *server) RestoreUser(ctx context.Context, in *pb.RestoreUserRequest) (*p
 	db.First(&user, id)
 
 	if (user.ID == 0) {
+		log.Println("User not found")
 		return &pb.RestoreUserResponse{}, nil
 	}
 
 	if (!user.Online) {
+		log.Println("User is not online")
 		return &pb.RestoreUserResponse{}, nil
 	}
 
@@ -154,6 +157,7 @@ func (s *server) RestoreUser(ctx context.Context, in *pb.RestoreUserRequest) (*p
 	newToken, err := jwtManager.Generate(&safeUser)
 
 	if err != nil {
+		log.Println(err, "Error generating token")
 		return nil, err
 	}
 
