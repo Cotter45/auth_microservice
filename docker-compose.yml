@@ -1,0 +1,11 @@
+version: "3.7"
+services:
+  server:
+    build: .
+    restart: always
+    ports:
+      - "50051:50051"
+    environment:
+      - SECRET=super_serial_secret_10000
+    depends_on:
+      - postgres
