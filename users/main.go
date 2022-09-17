@@ -72,10 +72,10 @@ func (manager *JWTManager) Generate(user *SafeUser) (string, error) {
     return token.SignedString([]byte(manager.secretKey))
 }
 
-func (manager *JWTManager) Verify(accessToken []byte) (*Claims, error) {
+func (manager *JWTManager) Verify(accessToken string) (*Claims, error) {
 
     token, err := jwt.ParseWithClaims(
-        string(accessToken),
+        accessToken,
         &Claims{},
         func(token *jwt.Token) (interface{}, error) {
             _, ok := token.Method.(*jwt.SigningMethodHMAC)
@@ -161,7 +161,7 @@ func (s *server) RestoreUser(ctx context.Context, in *pb.RestoreUserRequest) (*p
 		return nil, err
 	}
 
-	return &pb.RestoreUserResponse{Token: []byte(newToken), User: &pb.DbUser{
+	return &pb.RestoreUserResponse{Token: newToken, User: &pb.DbUser{
 		Id: userID,
 		Username: user.Username,
 		Email: user.Email,
@@ -190,10 +190,10 @@ func (s *server) LoginUser(ctx context.Context, in *pb.LoginUserRequest) (*pb.Lo
 		return &pb.LoginUserResponse{}, nil
 	}
 
-	if (user.Online) {
-		log.Println("User already online")
-		return &pb.LoginUserResponse{}, nil
-	}
+	// if (user.Online) {
+	// 	log.Println("User already online")
+	// 	return &pb.LoginUserResponse{}, nil
+	// }
 
 	user.Online = true
 	db.Save(&user)
@@ -214,7 +214,7 @@ func (s *server) LoginUser(ctx context.Context, in *pb.LoginUserRequest) (*pb.Lo
 		return &pb.LoginUserResponse{}, nil
 	}
 
-	return &pb.LoginUserResponse{Token: []byte(accessToken), User: &pb.DbUser{
+	return &pb.LoginUserResponse{Token: accessToken, User: &pb.DbUser{
 		Id: safeUser.ID,
 		Username: safeUser.Username,
 		Email: safeUser.Email,
@@ -273,7 +273,7 @@ func (s* server) SignupUser(ctx context.Context, in *pb.SignupUserRequest) (*pb.
 		return &pb.SignupUserResponse{}, nil
 	}
 
-	return &pb.SignupUserResponse{Token: []byte(accessToken), User: &pb.DbUser{Id: safeUser.ID, Username: safeUser.Username, Email: safeUser.Email, Description: safeUser.Description, Online: safeUser.Online}}, nil
+	return &pb.SignupUserResponse{Token: accessToken, User: &pb.DbUser{Id: safeUser.ID, Username: safeUser.Username, Email: safeUser.Email, Description: safeUser.Description, Online: safeUser.Online}}, nil
 }
 
 func (s *server) LogoutUser(ctx context.Context, in *pb.LogoutUserRequest) (*pb.LogoutUserResponse, error) {
