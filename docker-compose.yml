@@ -1,11 +1,12 @@
 version: "3.7"
 services:
-  server:
+  auth:
     build: .
     restart: always
     ports:
       - "50051:50051"
     environment:
       - SECRET=super_serial_secret_10000
-    depends_on:
-      - postgres
+    labels:
+      kompose.service.type: LoadBalancer
+      kompose.service.expose: "true"

@@ -10,9 +10,9 @@ import (
 	"time"
 	"os"
 
-	"github.com/Cotter45/auth_microservice/users/database"
-	"github.com/Cotter45/auth_microservice/users/model"
-	pb "github.com/Cotter45/auth_microservice/users/proto"
+	"github.com/Cotter45/auth_microservice/database"
+	"github.com/Cotter45/auth_microservice/model"
+	pb "github.com/Cotter45/auth_microservice/proto"
 	"github.com/golang-jwt/jwt"
 	"golang.org/x/crypto/bcrypt"
 	"google.golang.org/grpc"
@@ -121,7 +121,7 @@ func (s *server) RestoreUser(ctx context.Context, in *pb.RestoreUserRequest) (*p
 	token := in.GetToken()
 	jwtManager := NewJWTManager(os.Getenv("SECRET"), 15*time.Minute)
 
-	claims, err := jwtManager.Verify(token)
+	claims, err := jwtManager.Verify([]byte(token))
 
 	if err != nil {
 		log.Println("Error verifying token")
@@ -281,7 +281,7 @@ func (s *server) LogoutUser(ctx context.Context, in *pb.LogoutUserRequest) (*pb.
 	token := in.GetToken()
 	jwtManager := NewJWTManager(os.Getenv("SECRET"), 15*time.Minute)
 
-	claims, err := jwtManager.Verify(token)
+	claims, err := jwtManager.Verify([]byte(token))
 
 	if err != nil {
 		log.Println(err, "Error verifying token")
