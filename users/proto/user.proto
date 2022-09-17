@@ -53,11 +53,11 @@ message GetUsersResponse {
 }
 
 message RestoreUserRequest {
-  string token = 1;
+  bytes token = 1;
 }
 
 message RestoreUserResponse {
-  string token = 1;
+  bytes token = 1;
   DbUser user = 2;
 }
 
@@ -67,7 +67,7 @@ message LoginUserRequest {
 }
 
 message LoginUserResponse {
-  string token = 1;
+  bytes token = 1;
   DbUser user = 2;
 }
 
@@ -79,13 +79,13 @@ message SignupUserRequest {
 }
 
 message SignupUserResponse {
-  string token = 1;
+  bytes token = 1;
   DbUser user = 2;
 }
 
 message LogoutUserRequest {
   string id = 1;
-  string token = 2;
+  bytes token = 2;
 }
 
 message LogoutUserResponse {

@@ -74,9 +74,10 @@ func (manager *JWTManager) Generate(user *SafeUser) (string, error) {
     return token.SignedString([]byte(manager.secretKey))
 }
 
-func (manager *JWTManager) Verify(accessToken string) (*Claims, error) {
+func (manager *JWTManager) Verify(accessToken []byte) (*Claims, error) {
+
     token, err := jwt.ParseWithClaims(
-        accessToken,
+        string(accessToken),
         &Claims{},
         func(token *jwt.Token) (interface{}, error) {
             _, ok := token.Method.(*jwt.SigningMethodHMAC)
@@ -187,10 +188,13 @@ func main() {
 // Parse JWT, find user and return user
 func (s *server) Restore(ctx context.Context, in *pb.RestoreUserRequest) (*pb.RestoreUserResponse, error)  {
 	token := in.GetToken()
-	claims := &Claims{}
 	jwtManager := NewJWTManager(os.Getenv("SECRET"), 15*time.Minute)
 
 	claims, err := jwtManager.Verify(token)
+
+	if err != nil {
+		return nil, err
+	}
 
 	db := database.DB
 	id := claims.UserID
@@ -228,7 +232,13 @@ func (s *server) Restore(ctx context.Context, in *pb.RestoreUserRequest) (*pb.Re
 		return &pb.RestoreUserResponse{}, nil
 	}
 
-	return &pb.RestoreUserResponse{token: tokenString, user: &pb.DbUser{id: safeUser.ID, username: safeUser.Username, email: safeUser.Email, description: safeUser.Description, online: safeUser.Online}}, nil
+	return &pb.RestoreUserResponse{Token: []byte(tokenString), User: &pb.DbUser{
+		Id: userID,
+		Username: user.Username,
+		Email: user.Email,
+		Description: user.Description,
+		Online: user.Online,
+	}}, nil
 }
 
 // Login get user and password
@@ -241,6 +251,9 @@ func (s *server) Login(ctx context.Context, in *pb.LoginUserRequest) (*pb.LoginU
 		ID       uint   `json:"id"`
 		Email    string `json:"email"`
 		Password string `json:"password"`
+		Username string `json:"username"`
+		Description string `json:"description"`
+		Online bool `json:"online"`
 	}
 	var input LoginInput
 	var ud UserData
@@ -254,16 +267,16 @@ func (s *server) Login(ctx context.Context, in *pb.LoginUserRequest) (*pb.LoginU
 	email := input.Email
 	pass := input.Password
 
-	user := db.Where(&model.User{Email: email}).First(&model.User{})
+	user := db.Where(&model.User{Email: email}).First(&ud)
 
 	if user == nil {
 		return &pb.LoginUserResponse{}, nil
 	}
 
 	ud = UserData{
-		ID:       user.ID,
-		Email:    user.Email,
-		Password: user.Password,
+		ID:       ud.ID,
+		Email:    ud.Email,
+		Password: ud.Password,
 	}
 
 	if !CheckPasswordHash(pass, ud.Password) {
@@ -274,7 +287,7 @@ func (s *server) Login(ctx context.Context, in *pb.LoginUserRequest) (*pb.LoginU
 
 	claims := &Claims{
 		Email: ud.Email,
-		UserID: string(ud.ID),
+		UserID: fmt.Sprint(ud.ID),
 		StandardClaims: jwt.StandardClaims{
 			ExpiresAt: expirationTime.Unix(),
 		},
@@ -286,22 +299,28 @@ func (s *server) Login(ctx context.Context, in *pb.LoginUserRequest) (*pb.LoginU
 		return &pb.LoginUserResponse{}, nil
 	}
 
-	user.Online = true
-	db.Save(&user)
+	ud.Online = true
+	db.Save(&ud)
 
 	safeUser := SafeUser{
-		ID:       user.ID,
-		Username: user.Username,
-		Email:    user.Email,
-		Description: user.Description,
-		Online: user.Online,
+		ID:       fmt.Sprint(ud.ID),
+		Username: ud.Username,
+		Email:    ud.Email,
+		Description: ud.Description,
+		Online: ud.Online,
 	}
 
-	return &pb.LoginUserResponse{token: tokenString, user: &pb.DbUser{id: safeUser.ID, username: safeUser.Username, email: safeUser.Email, description: safeUser.Description, online: safeUser.Online}}, nil
+	return &pb.LoginUserResponse{Token: []byte(tokenString), User: &pb.DbUser{
+		Id: safeUser.ID,
+		Username: safeUser.Username,
+		Email: safeUser.Email,
+		Description: safeUser.Description,
+		Online: safeUser.Online,
+	}}, nil
 }
 
 // Signup create user, return cookie and user
-func (s* server) Signup(ctx context.Context, in *pb.SignupUserRequest) (*pb.SignupUserResponse, error) {
+func (s* server) SignupUser(ctx context.Context, in *pb.SignupUserRequest) (*pb.SignupUserResponse, error) {
 	user := new(model.User)
 
 	user.Username = in.GetUsername()
@@ -312,25 +331,25 @@ func (s* server) Signup(ctx context.Context, in *pb.SignupUserRequest) (*pb.Sign
 
 	db := database.DB
 
-	if err := db.Create(user).Error; err != nil {
-		return &pb.SignupUserResponse{}, nil
-	}
-
 	if err := db.Where(&model.User{Email: user.Email}).First(&model.User{}).Error; err == nil {
+		log.Println(err, "User already exists")
 		return &pb.SignupUserResponse{}, nil
 	}
 
 	if err := db.Where(&model.User{Username: user.Username}).First(&model.User{}).Error; err == nil {
+		log.Println(err, "User already exists")
 		return &pb.SignupUserResponse{}, nil
 	}
 
 	hash, err := HashPassword(user.Password)
 	if err != nil {
+		log.Println(err, "Error hashing password")
 		return &pb.SignupUserResponse{}, nil
 	}
 
 	user.Password = hash
 	if err := db.Create(&user).Error; err != nil {
+		log.Println(err, "Error creating user")
 		return &pb.SignupUserResponse{}, nil
 	}
 
@@ -338,7 +357,7 @@ func (s* server) Signup(ctx context.Context, in *pb.SignupUserRequest) (*pb.Sign
 
 	claims := &Claims{
 		Email: user.Email,
-		UserID: string(user.ID),
+		UserID: fmt.Sprint(user.ID),
 		StandardClaims: jwt.StandardClaims{
 			ExpiresAt: expirationTime.Unix(),
 		},
@@ -347,18 +366,19 @@ func (s* server) Signup(ctx context.Context, in *pb.SignupUserRequest) (*pb.Sign
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	tokenString, err := token.SignedString(jwtKey)
 	if err != nil {
+		log.Println(err, "Error creating token")
 		return &pb.SignupUserResponse{}, nil
 	}
 
 	safeUser := SafeUser{
-		ID:       string(user.ID),
+		ID:       fmt.Sprint(user.ID),
 		Username: user.Username,
 		Email:    user.Email,
 		Description: user.Description,
 		Online: user.Online,
 	}
 
-	return &pb.SignupUserResponse{Token: tokenString, User: &pb.DbUser{Id: safeUser.ID, Username: safeUser.Username, Email: safeUser.Email, Description: safeUser.Description, Online: safeUser.Online}}, nil
+	return &pb.SignupUserResponse{Token: []byte(tokenString), User: &pb.DbUser{Id: safeUser.ID, Username: safeUser.Username, Email: safeUser.Email, Description: safeUser.Description, Online: safeUser.Online}}, nil
 }
 
 func (s *server) Logout(ctx context.Context, in *pb.LogoutUserRequest) (*pb.LogoutUserResponse, error) {
@@ -383,13 +403,14 @@ func (s *server) Logout(ctx context.Context, in *pb.LogoutUserRequest) (*pb.Logo
 		return &pb.LogoutUserResponse{}, nil
 	}
 
-	user := db.Where(&model.User{ID: uint(id)}).First(&model.User{})
-	if user == nil {
+	var user model.User
+	db.Where(&model.User{ID: uint(id)}).First(&user)
+	if user.ID == 0 {
 		return &pb.LogoutUserResponse{}, nil
 	}
 
 	user.Online = false
 	db.Save(&user)
 
-	return &pb.LogoutUserResponse{message: "Logout successful"}, nil
+	return &pb.LogoutUserResponse{Message: "Success"}, nil
 }
