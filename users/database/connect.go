@@ -2,7 +2,7 @@ package database
 
 import (
 	"fmt"
-	"go_grpc/users/model"
+	"github.com/Cotter45/auth_microservice/users/model"
 
 	"gorm.io/driver/sqlite"
 	// "gorm.io/driver/postgres"

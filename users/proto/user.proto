@@ -8,9 +8,21 @@ service User {
   rpc GetUser (GetUserRequest) returns (GetUserResponse) {}
   rpc CreateUser (CreateUserRequest) returns (CreateUserResponse) {}
   rpc GetUsers (GetUsersRequest) returns (GetUsersResponse) {}
+  rpc RestoreUser (RestoreUserRequest) returns (RestoreUserResponse) {}
+  rpc LoginUser (LoginUserRequest) returns (LoginUserResponse) {}
+  rpc SignupUser (SignupUserRequest) returns (SignupUserResponse) {}
+  rpc LogoutUser (LogoutUserRequest) returns (LogoutUserResponse) {}
 }
 
 message Empty {}
+
+message DbUser {
+  string id = 1;
+  string username = 2;
+  string email = 3;
+  string description = 4;
+  bool online = 5;
+}
 
 message GetUserRequest {
   string id = 1;
@@ -38,4 +50,44 @@ message GetUsersRequest {}
 
 message GetUsersResponse {
   repeated GetUserResponse users = 1;
+}
+
+message RestoreUserRequest {
+  string token = 1;
+}
+
+message RestoreUserResponse {
+  string token = 1;
+  DbUser user = 2;
+}
+
+message LoginUserRequest {
+  string email = 1;
+  string password = 2;
+}
+
+message LoginUserResponse {
+  string token = 1;
+  DbUser user = 2;
+}
+
+message SignupUserRequest {
+  string username = 1;
+  string email = 2;
+  string password = 3;
+  string description = 4;
+}
+
+message SignupUserResponse {
+  string token = 1;
+  DbUser user = 2;
+}
+
+message LogoutUserRequest {
+  string id = 1;
+  string token = 2;
+}
+
+message LogoutUserResponse {
+  string message = 1;
 }

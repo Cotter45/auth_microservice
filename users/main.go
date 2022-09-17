@@ -8,10 +8,11 @@ import (
 	"net"
 	"strconv"
 	"time"
+	"os"
 
-	"go_grpc/users/database"
-	"go_grpc/users/model"
-	pb "go_grpc/users/proto"
+	"github.com/Cotter45/auth_microservice/users/database"
+	"github.com/Cotter45/auth_microservice/users/model"
+	pb "github.com/Cotter45/auth_microservice/users/proto"
 	"github.com/golang-jwt/jwt"
 	"golang.org/x/crypto/bcrypt"
 	"google.golang.org/grpc"
@@ -21,12 +22,17 @@ var (
 	port = flag.Int("port", 50051, "The server port")
 )
 
+func HashPassword(password string) (string, error) {
+	bytes, err := bcrypt.GenerateFromPassword([]byte(password), 14)
+	return string(bytes), err
+}
+
 func CheckPasswordHash(password, hash string) bool {
 	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
 	return err == nil
 }
 
-var jwtKey = []byte(config.Config("SECRET"))
+var jwtKey = []byte(os.Getenv("SECRET"))
 
 type Claims struct {
 	Email string `json:"email"`
@@ -38,8 +44,6 @@ type SafeUser struct {
 	ID       string   `json:"id"`
 	Username string `json:"username"`
 	Email    string `json:"email"`
-	ProfilePicture string `json:"profile_picture"`
-	CoverPicture string `json:"cover_picture"`
 	Description string `json:"description"`
 	Online bool `json:"online"`
 }
@@ -107,10 +111,10 @@ func main() {
 
 // Parse JWT, find user and return user
 func (s *server) Restore(ctx context.Context, in *pb.RestoreTokenRequest) (*pb.RestoreTokenResponse, error)  {
-	cookie := in.GetToken()
+	token := in.GetToken()
 	claims := &Claims{}
 
-	token, err := jwt.ParseWithClaims(cookie, claims, func(token *jwt.Token) (interface{}, error) {
+	token, err := jwt.ParseWithClaims(token, claims, func(token *jwt.Token) (interface{}, error) {
 		return jwtKey, nil
 	})
 
@@ -119,10 +123,14 @@ func (s *server) Restore(ctx context.Context, in *pb.RestoreTokenRequest) (*pb.R
 	}
 
 	db := database.DB
-	id := in.GetId()
+	id := claims.UserID
 
 	var user model.User
 	db.First(&user, id)
+
+	if (user.ID == 0) {
+		return &pb.RestoreTokenResponse{Error: "User not found"}, nil
+	}
 
 	userID := strconv.FormatUint(uint64(user.ID), 10)
 
@@ -147,14 +155,14 @@ func (s *server) Restore(ctx context.Context, in *pb.RestoreTokenRequest) (*pb.R
 	newToken := jwt.NewWithClaims(jwt.SigningMethodHS256, newClaims)
 	tokenString, err := newToken.SignedString(jwtKey)
 	if err != nil {
-		return 
+		return &pb.RestoreTokenResponse{Error: "Error signing token"}, nil
 	}
 
-	return safeUser, tokenString
+	return &pb.RestoreTokenResponse{token: tokenString, user: &pb.DbUser{id: safeUser.ID, username: safeUser.Username, email: safeUser.Email, description: safeUser.Description, online: safeUser.Online}}, nil
 }
 
 // Login get user and password
-func Login(c *fiber.Ctx) error {
+func (s *server) Login(ctx context.Context, in *pb.LoginRequest) (*pb.LoginResponse, error) {
 	type LoginInput struct {
 		Email string `json:"email"`
 		Password string `json:"password"`
@@ -167,19 +175,19 @@ func Login(c *fiber.Ctx) error {
 	var input LoginInput
 	var ud UserData
 
-	if err := c.BodyParser(&input); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"status": "error", "message": "Error on login request", "data": err})
+	input = LoginInput{
+		Email: in.GetEmail(),
+		Password: in.GetPassword(),
 	}
+
+	db := database.DB
 	identity := input.Email
 	pass := input.Password
 
-	user, err := GetUserByEmail(identity)
-	if err != nil {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"status": "error", "message": "Error on email", "data": err})
-	}
+	user, err := db.Where(&model.User{Email: email}).First(&model.User{})
 
 	if user == nil {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"status": "error", "message": "User not found", "data": err})
+		return &pb.LoginResponse{Error: "User not found"}, nil
 	}
 
 	ud = UserData{
@@ -189,7 +197,7 @@ func Login(c *fiber.Ctx) error {
 	}
 
 	if !CheckPasswordHash(pass, ud.Password) {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"status": "error", "message": "Invalid password", "data": nil})
+		return &pb.LoginResponse{Error: "Wrong password"}, nil
 	}
 
 	expirationTime := time.Now().Add(1 * time.Hour)
@@ -205,70 +213,62 @@ func Login(c *fiber.Ctx) error {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	tokenString, err := token.SignedString(jwtKey)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"status": "error", "message": "Error on login request", "data": err})
+		return &pb.LoginResponse{Error: "Error signing token"}, nil
 	}
 
-	c.Cookie(&fiber.Cookie{
-		Expires: expirationTime,
-		Path:    "/",
-		Secure:  config.Config("ENVIRONMENT") == "production",
-		SameSite: "Lax",
-		HTTPOnly: true,
-		Value:  tokenString,
-		Name:    "token",
-	})
-
 	user.Online = true
-	config.DB.Save(&user)
+	db.Save(&user)
 
 	safeUser := SafeUser{
 		ID:       user.ID,
 		Username: user.Username,
 		Email:    user.Email,
-		ProfilePicture: user.ProfilePicture,
-		CoverPicture: user.CoverPicture,
 		Description: user.Description,
 		Online: user.Online,
 	}
 
-	return c.JSON(fiber.Map{"status": "success", "message": "Success login", "data": safeUser})
+	return &pb.LoginUserResponse{token: tokenString, user: &pb.DbUser{id: safeUser.ID, username: safeUser.Username, email: safeUser.Email, description: safeUser.Description, online: safeUser.Online}}, nil
 }
 
 // Signup create user, return cookie and user
-func Signup(c *fiber.Ctx) error {
-	user := new(models.User)
+func (s* server) Signup(ctx context.Context, in *pb.SignupRequest) (*pb.SignupResponse, error) {
+	user := new(model.User)
 
-	if err := c.BodyParser(&user); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"status": "error", "message": "Error on signup request", "data": err})
+	user.Username = in.GetUsername()
+	user.Email = in.GetEmail()
+	user.Password = in.GetPassword()
+	user.Description = in.GetDescription()
+	user.Online = true
+
+	db := database.DB
+
+	if err := db.Create(user).Error; err != nil {
+		return &pb.SignupResponse{Error: "User already exists"}, nil
 	}
 
-	email := user.Email
-	pass := user.Password
-	username := user.Username
-
-	if err := config.DB.Where(&models.User{Email: email}).First(&models.User{}).Error; err == nil {
-		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"status": "error", "message": "User already exists", "data": nil})
+	if err := db.Where(&model.User{Email: user.Email}).First(&model.User{}).Error; err == nil {
+		return &pb.SignupResponse{Error: "User already exists"}, nil
 	}
 
-	if err := config.DB.Where(&models.User{Username: username}).First(&models.User{}).Error; err == nil {
-		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"status": "error", "message": "User already exists", "data": nil})
+	if err := db.Where(&model.User{Username: user.Username}).First(&model.User{}).Error; err == nil {
+		return &pb.SignupResponse{Error: "User already exists"}, nil
 	}
 
-	hash, err := HashPassword(pass)
+	hash, err := HashPassword(user.Password)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"status": "error", "message": "Couln't hash password", "data": err})
+		return &pb.SignupResponse{Error: "Error hashing password"}, nil
 	}
 
 	user.Password = hash
-	if err := config.DB.Create(&user).Error; err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"status": "error", "message": "Error on signup request", "data": err})
+	if err := db.Create(&user).Error; err != nil {
+		return &pb.SignupResponse{Error: "Error creating user"}, nil
 	}
 
 	expirationTime := time.Now().Add(1 * time.Hour)
 
 	claims := &Claims{
 		Email: user.Email,
-		UserID: user.ID,
+		UserID: string(user.ID),
 		StandardClaims: jwt.StandardClaims{
 			ExpiresAt: expirationTime.Unix(),
 		},
@@ -277,65 +277,44 @@ func Signup(c *fiber.Ctx) error {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	tokenString, err := token.SignedString(jwtKey)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"status": "error", "message": "Error on login request", "data": err})
+		return &pb.SignupResponse{Error: "Error signing token"}, nil
 	}
 
-	c.Cookie(&fiber.Cookie{
-		Expires: expirationTime,
-		Path:    "/",
-		Secure:  config.Config("ENVIRONMENT") == "production",
-		SameSite: "Lax",
-		HTTPOnly: true,
-		Value:  tokenString,
-		Name:    "token",
-	})
-	
-	user.Online = true
-	config.DB.Save(&user)
-
 	safeUser := SafeUser{
-		ID:       user.ID,
+		ID:       string(user.ID),
 		Username: user.Username,
 		Email:    user.Email,
-		ProfilePicture: user.ProfilePicture,
-		CoverPicture: user.CoverPicture,
 		Description: user.Description,
 		Online: user.Online,
 	}
 
-	return c.JSON(fiber.Map{"status": "success", "message": "Success login", "data": safeUser})
+	return &pb.SignupResponse{Token: tokenString, User: &pb.DbUser{Id: safeUser.ID, Username: safeUser.Username, Email: safeUser.Email, Description: safeUser.Description, Online: safeUser.Online}}, nil
 }
 
-// Logout delete cookie
-func Logout(c *fiber.Ctx) error {
-	cookie := c.Cookies("token")
+func (s *server) Logout(ctx context.Context, in *pb.LogoutRequest) (*pb.LogoutResponse, error) {
+	userId := in.GetId()
+	token := in.GetToken()
 	claims := &Claims{}
+	db := database.DB
 
-	token, err := jwt.ParseWithClaims(cookie, claims, func(token *jwt.Token) (interface{}, error) {
+	token, err := jwt.ParseWithClaims(token, claims, func(token *jwt.Token) (interface{}, error) {
 		return jwtKey, nil
 	})
 
 	if err != nil {
-		return c.Status(200).JSON(fiber.Map{"status": "error", "message": "Invalid token", "data": nil})
+		return &pb.LogoutResponse{Error: "Error parsing token"}, nil
 	}
 	if !token.Valid {
-		return c.Status(401).JSON(fiber.Map{"status": "error", "message": "Invalid token", "data": nil})
+		return &pb.LogoutResponse{Error: "Token is not valid"}, nil
 	}
 
-	user, err := GetUserByEmail(claims.Email)
-	if err != nil {
-		return c.Status(401).JSON(fiber.Map{"status": "error", "message": "Invalid token", "data": nil})
+	user := db.Where(&model.User{ID: userId}).First(&model.User{})
+	if user == nil {
+		return &pb.LogoutResponse{Error: "User not found"}, nil
 	}
 
 	user.Online = false
-	config.DB.Save(&user)
+	db.Save(&user)
 
-	newCookie := new(fiber.Cookie)
-	newCookie.Name = "token"
-	newCookie.Expires = time.Now().AddDate(0, 0, -1)
-	newCookie.Path = "/"
-	newCookie.Secure = false
-	newCookie.HTTPOnly = true
-	c.Cookie(newCookie)
-	return c.Status(fiber.StatusOK).JSON(fiber.Map{"status": "success", "message": "Success logout", "data": nil})
+	return &pb.LogoutResponse{message: "Logout successful"}, nil
 }
