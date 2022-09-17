@@ -84,7 +84,7 @@ message SignupUserResponse {
 }
 
 message LogoutUserRequest {
-  bytes token = 2;
+  bytes token = 1;
 }
 
 message LogoutUserResponse {
