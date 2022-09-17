@@ -72,10 +72,10 @@ func (manager *JWTManager) Generate(user *SafeUser) (string, error) {
     return token.SignedString([]byte(manager.secretKey))
 }
 
-func (manager *JWTManager) Verify(accessToken string) (*Claims, error) {
+func (manager *JWTManager) Verify(accessToken []byte) (*Claims, error) {
 
     token, err := jwt.ParseWithClaims(
-        accessToken,
+        string(accessToken),
         &Claims{},
         func(token *jwt.Token) (interface{}, error) {
             _, ok := token.Method.(*jwt.SigningMethodHMAC)
