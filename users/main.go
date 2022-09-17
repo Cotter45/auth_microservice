@@ -52,6 +52,56 @@ type server struct {
 	pb.UnimplementedUserServer
 }
 
+type JWTManager struct {
+    secretKey     string
+    tokenDuration time.Duration
+}
+
+func NewJWTManager(secretKey string, tokenDuration time.Duration) *JWTManager {
+    return &JWTManager{secretKey, tokenDuration}
+}
+
+func (manager *JWTManager) Generate(user *SafeUser) (string, error) {
+    claims := Claims{
+        StandardClaims: jwt.StandardClaims{
+            ExpiresAt: time.Now().Add(manager.tokenDuration).Unix(),
+        },
+        UserID: user.ID,
+        Email:     user.Email,
+    }
+
+    token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+    return token.SignedString([]byte(manager.secretKey))
+}
+
+func (manager *JWTManager) Verify(accessToken string) (*Claims, error) {
+    token, err := jwt.ParseWithClaims(
+        accessToken,
+        &Claims{},
+        func(token *jwt.Token) (interface{}, error) {
+            _, ok := token.Method.(*jwt.SigningMethodHMAC)
+            if !ok {
+                return nil, fmt.Errorf("unexpected token signing method")
+            }
+
+            return []byte(manager.secretKey), nil
+        },
+    )
+
+    if err != nil {
+        return nil, fmt.Errorf("invalid token: %w", err)
+    }
+
+    claims, ok := token.Claims.(*Claims)
+    if !ok {
+        return nil, fmt.Errorf("invalid token claims")
+    }
+
+    return claims, nil
+}
+
+
+
 // SayHello implements helloworld.GreeterServer
 func (s *server) GetUser(ctx context.Context, in *pb.GetUserRequest) (*pb.GetUserResponse, error) {
 	db := database.DB
@@ -94,15 +144,40 @@ func (s *server) GetUsers(ctx context.Context, in *pb.GetUsersRequest) (*pb.GetU
 	return &pb.GetUsersResponse{Users: usersResponse}, nil
 }
 
+func unaryInterceptor(
+    ctx context.Context,
+    req interface{},
+    info *grpc.UnaryServerInfo,
+    handler grpc.UnaryHandler,
+) (interface{}, error) {
+    log.Println("--> unary interceptor: ", info.FullMethod)
+    return handler(ctx, req)
+}
+
+func streamInterceptor(
+    srv interface{},
+    stream grpc.ServerStream,
+    info *grpc.StreamServerInfo,
+    handler grpc.StreamHandler,
+) error {
+    log.Println("--> stream interceptor: ", info.FullMethod)
+    return handler(srv, stream)
+}
+
 func main() {
 	flag.Parse()
 	database.ConnectDB()
+
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", *port))
 	if err != nil {
 		log.Fatalf("failed to listen: %v", err)
 	}
-	s := grpc.NewServer()
+	s := grpc.NewServer(
+		grpc.UnaryInterceptor(unaryInterceptor),
+		grpc.StreamInterceptor(streamInterceptor),
+	)
 	pb.RegisterUserServer(s, &server{})
+
 	log.Printf("server listening at %v", lis.Addr())
 	if err := s.Serve(lis); err != nil {
 		log.Fatalf("failed to serve: %v", err)
@@ -110,17 +185,12 @@ func main() {
 }
 
 // Parse JWT, find user and return user
-func (s *server) Restore(ctx context.Context, in *pb.RestoreTokenRequest) (*pb.RestoreTokenResponse, error)  {
+func (s *server) Restore(ctx context.Context, in *pb.RestoreUserRequest) (*pb.RestoreUserResponse, error)  {
 	token := in.GetToken()
 	claims := &Claims{}
+	jwtManager := NewJWTManager(os.Getenv("SECRET"), 15*time.Minute)
 
-	token, err := jwt.ParseWithClaims(token, claims, func(token *jwt.Token) (interface{}, error) {
-		return jwtKey, nil
-	})
-
-	if !token.Valid {
-		return
-	}
+	claims, err := jwtManager.Verify(token)
 
 	db := database.DB
 	id := claims.UserID
@@ -129,7 +199,7 @@ func (s *server) Restore(ctx context.Context, in *pb.RestoreTokenRequest) (*pb.R
 	db.First(&user, id)
 
 	if (user.ID == 0) {
-		return &pb.RestoreTokenResponse{Error: "User not found"}, nil
+		return &pb.RestoreUserResponse{}, nil
 	}
 
 	userID := strconv.FormatUint(uint64(user.ID), 10)
@@ -155,14 +225,14 @@ func (s *server) Restore(ctx context.Context, in *pb.RestoreTokenRequest) (*pb.R
 	newToken := jwt.NewWithClaims(jwt.SigningMethodHS256, newClaims)
 	tokenString, err := newToken.SignedString(jwtKey)
 	if err != nil {
-		return &pb.RestoreTokenResponse{Error: "Error signing token"}, nil
+		return &pb.RestoreUserResponse{}, nil
 	}
 
-	return &pb.RestoreTokenResponse{token: tokenString, user: &pb.DbUser{id: safeUser.ID, username: safeUser.Username, email: safeUser.Email, description: safeUser.Description, online: safeUser.Online}}, nil
+	return &pb.RestoreUserResponse{token: tokenString, user: &pb.DbUser{id: safeUser.ID, username: safeUser.Username, email: safeUser.Email, description: safeUser.Description, online: safeUser.Online}}, nil
 }
 
 // Login get user and password
-func (s *server) Login(ctx context.Context, in *pb.LoginRequest) (*pb.LoginResponse, error) {
+func (s *server) Login(ctx context.Context, in *pb.LoginUserRequest) (*pb.LoginUserResponse, error) {
 	type LoginInput struct {
 		Email string `json:"email"`
 		Password string `json:"password"`
@@ -181,13 +251,13 @@ func (s *server) Login(ctx context.Context, in *pb.LoginRequest) (*pb.LoginRespo
 	}
 
 	db := database.DB
-	identity := input.Email
+	email := input.Email
 	pass := input.Password
 
-	user, err := db.Where(&model.User{Email: email}).First(&model.User{})
+	user := db.Where(&model.User{Email: email}).First(&model.User{})
 
 	if user == nil {
-		return &pb.LoginResponse{Error: "User not found"}, nil
+		return &pb.LoginUserResponse{}, nil
 	}
 
 	ud = UserData{
@@ -197,14 +267,14 @@ func (s *server) Login(ctx context.Context, in *pb.LoginRequest) (*pb.LoginRespo
 	}
 
 	if !CheckPasswordHash(pass, ud.Password) {
-		return &pb.LoginResponse{Error: "Wrong password"}, nil
+		return &pb.LoginUserResponse{}, nil
 	}
 
 	expirationTime := time.Now().Add(1 * time.Hour)
 
 	claims := &Claims{
 		Email: ud.Email,
-		UserID: ud.ID,
+		UserID: string(ud.ID),
 		StandardClaims: jwt.StandardClaims{
 			ExpiresAt: expirationTime.Unix(),
 		},
@@ -213,7 +283,7 @@ func (s *server) Login(ctx context.Context, in *pb.LoginRequest) (*pb.LoginRespo
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	tokenString, err := token.SignedString(jwtKey)
 	if err != nil {
-		return &pb.LoginResponse{Error: "Error signing token"}, nil
+		return &pb.LoginUserResponse{}, nil
 	}
 
 	user.Online = true
@@ -231,7 +301,7 @@ func (s *server) Login(ctx context.Context, in *pb.LoginRequest) (*pb.LoginRespo
 }
 
 // Signup create user, return cookie and user
-func (s* server) Signup(ctx context.Context, in *pb.SignupRequest) (*pb.SignupResponse, error) {
+func (s* server) Signup(ctx context.Context, in *pb.SignupUserRequest) (*pb.SignupUserResponse, error) {
 	user := new(model.User)
 
 	user.Username = in.GetUsername()
@@ -243,25 +313,25 @@ func (s* server) Signup(ctx context.Context, in *pb.SignupRequest) (*pb.SignupRe
 	db := database.DB
 
 	if err := db.Create(user).Error; err != nil {
-		return &pb.SignupResponse{Error: "User already exists"}, nil
+		return &pb.SignupUserResponse{}, nil
 	}
 
 	if err := db.Where(&model.User{Email: user.Email}).First(&model.User{}).Error; err == nil {
-		return &pb.SignupResponse{Error: "User already exists"}, nil
+		return &pb.SignupUserResponse{}, nil
 	}
 
 	if err := db.Where(&model.User{Username: user.Username}).First(&model.User{}).Error; err == nil {
-		return &pb.SignupResponse{Error: "User already exists"}, nil
+		return &pb.SignupUserResponse{}, nil
 	}
 
 	hash, err := HashPassword(user.Password)
 	if err != nil {
-		return &pb.SignupResponse{Error: "Error hashing password"}, nil
+		return &pb.SignupUserResponse{}, nil
 	}
 
 	user.Password = hash
 	if err := db.Create(&user).Error; err != nil {
-		return &pb.SignupResponse{Error: "Error creating user"}, nil
+		return &pb.SignupUserResponse{}, nil
 	}
 
 	expirationTime := time.Now().Add(1 * time.Hour)
@@ -277,7 +347,7 @@ func (s* server) Signup(ctx context.Context, in *pb.SignupRequest) (*pb.SignupRe
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	tokenString, err := token.SignedString(jwtKey)
 	if err != nil {
-		return &pb.SignupResponse{Error: "Error signing token"}, nil
+		return &pb.SignupUserResponse{}, nil
 	}
 
 	safeUser := SafeUser{
@@ -288,33 +358,38 @@ func (s* server) Signup(ctx context.Context, in *pb.SignupRequest) (*pb.SignupRe
 		Online: user.Online,
 	}
 
-	return &pb.SignupResponse{Token: tokenString, User: &pb.DbUser{Id: safeUser.ID, Username: safeUser.Username, Email: safeUser.Email, Description: safeUser.Description, Online: safeUser.Online}}, nil
+	return &pb.SignupUserResponse{Token: tokenString, User: &pb.DbUser{Id: safeUser.ID, Username: safeUser.Username, Email: safeUser.Email, Description: safeUser.Description, Online: safeUser.Online}}, nil
 }
 
-func (s *server) Logout(ctx context.Context, in *pb.LogoutRequest) (*pb.LogoutResponse, error) {
+func (s *server) Logout(ctx context.Context, in *pb.LogoutUserRequest) (*pb.LogoutUserResponse, error) {
 	userId := in.GetId()
-	token := in.GetToken()
-	claims := &Claims{}
 	db := database.DB
+	token := in.GetToken()
+	jwtManager := NewJWTManager(os.Getenv("SECRET"), 15*time.Minute)
 
-	token, err := jwt.ParseWithClaims(token, claims, func(token *jwt.Token) (interface{}, error) {
-		return jwtKey, nil
-	})
+	claims, err := jwtManager.Verify(token)
 
 	if err != nil {
-		return &pb.LogoutResponse{Error: "Error parsing token"}, nil
-	}
-	if !token.Valid {
-		return &pb.LogoutResponse{Error: "Token is not valid"}, nil
+		return &pb.LogoutUserResponse{}, nil
 	}
 
-	user := db.Where(&model.User{ID: userId}).First(&model.User{})
+	if claims.UserID != userId {
+		return &pb.LogoutUserResponse{}, nil
+	}
+
+	id, err := strconv.ParseUint(userId, 10, 64)
+
+	if err != nil {
+		return &pb.LogoutUserResponse{}, nil
+	}
+
+	user := db.Where(&model.User{ID: uint(id)}).First(&model.User{})
 	if user == nil {
-		return &pb.LogoutResponse{Error: "User not found"}, nil
+		return &pb.LogoutUserResponse{}, nil
 	}
 
 	user.Online = false
 	db.Save(&user)
 
-	return &pb.LogoutResponse{message: "Logout successful"}, nil
+	return &pb.LogoutUserResponse{message: "Logout successful"}, nil
 }
